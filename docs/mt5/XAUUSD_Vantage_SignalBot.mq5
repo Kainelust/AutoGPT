@@ -13,12 +13,21 @@ enum ENUM_LOT_MODE
    LOT_MODE_FIXED_LOT = 1
 };
 
+enum ENUM_SCALP_PRESET
+{
+   PRESET_CUSTOM = 0,
+   PRESET_CONSERVATIVE = 1,
+   PRESET_BALANCED = 2,
+   PRESET_AGGRESSIVE = 3
+};
+
 // =========================
 // AGGRESSIVE M1 SCALPING EA
 // =========================
 
 input string InpSymbol = "XAUUSD";
 input ENUM_TIMEFRAMES InpSignalTimeframe = PERIOD_M1;
+input ENUM_SCALP_PRESET InpScalpPreset = PRESET_BALANCED;
 
 // Fast, high-frequency signal setup
 input int InpFastEmaPeriod = 5;
@@ -85,6 +94,15 @@ void EvaluateEntries();
 void ManageOpenPositions();
 void OpenBuy(double atrValue);
 void OpenSell(double atrValue);
+double EffRiskPercent();
+double EffFixedLotSize();
+double EffSLAtrMult();
+double EffTPAtrMult();
+int EffMaxSpreadPoints();
+int EffMaxTradesPerDay();
+int EffMinSecondsBetweenEntries();
+int EffMaxHoldMinutes();
+double EffMaxDailyLossPercent();
 
 int OnInit()
 {
@@ -114,7 +132,7 @@ int OnInit()
    dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    tradesToday = 0;
 
-   Print("Initialized aggressive XAUUSD M1 scalper.");
+   Print("Initialized aggressive XAUUSD M1 scalper. Preset=", (int)InpScalpPreset);
    return INIT_SUCCEEDED;
 }
 
@@ -139,7 +157,7 @@ void OnTick()
    if(!IsSpreadOk()) return;
    if(!IsDailyRiskOk()) return;
 
-   if(tradesToday >= InpMaxTradesPerDay)
+   if(tradesToday >= EffMaxTradesPerDay())
    {
       Print("Daily max trades reached.");
       return;
@@ -197,7 +215,7 @@ bool IsSpreadOk()
    double bid = SymbolInfoDouble(InpSymbol, SYMBOL_BID);
    double spread = (ask - bid) / point;
 
-   if(spread > InpMaxSpreadPoints)
+   if(spread > EffMaxSpreadPoints())
    {
       Print("Spread too high: ", DoubleToString(spread, 1));
       return false;
@@ -213,7 +231,7 @@ bool IsDailyRiskOk()
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double drawdown = ((dayStartEquity - equity) / dayStartEquity) * 100.0;
 
-   if(drawdown >= InpMaxDailyLossPercent)
+   if(drawdown >= EffMaxDailyLossPercent())
    {
       Print("Daily loss limit reached: ", DoubleToString(drawdown, 2), "%");
       return false;
@@ -285,12 +303,12 @@ double NormalizeVolume(double volume)
 double CalculatePositionSizeLots(double slDistancePrice)
 {
    if(InpLotMode == LOT_MODE_FIXED_LOT)
-      return NormalizeVolume(InpFixedLotSize);
+      return NormalizeVolume(EffFixedLotSize());
 
    if(slDistancePrice <= 0.0) return 0.0;
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double riskMoney = balance * (InpRiskPercent / 100.0);
+   double riskMoney = balance * (EffRiskPercent() / 100.0);
    if(riskMoney <= 0.0) return 0.0;
 
    double tickSize = SymbolInfoDouble(InpSymbol, SYMBOL_TRADE_TICK_SIZE);
@@ -335,7 +353,7 @@ bool BuildSignal(bool &longSignal, bool &shortSignal, double &atrCurrent)
 
 void EvaluateEntries()
 {
-   if((TimeCurrent() - lastEntryTime) < InpMinSecondsBetweenEntries)
+   if((TimeCurrent() - lastEntryTime) < EffMinSecondsBetweenEntries())
       return;
 
    int openBuys = CountOpenPositions(true, false);
@@ -391,10 +409,10 @@ void ManageOpenPositions()
       double current = (type == POSITION_TYPE_BUY) ? bid : ask;
 
       // 1) Hard timeout
-      if(InpMaxHoldMinutes > 0)
+      if(EffMaxHoldMinutes() > 0)
       {
          int held = (int)((TimeCurrent() - openTime) / 60);
-         if(held >= InpMaxHoldMinutes)
+         if(held >= EffMaxHoldMinutes())
          {
             trade.PositionClose(ticket);
             continue;
@@ -457,13 +475,86 @@ void ManageOpenPositions()
    }
 }
 
+
+double EffRiskPercent()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 0.4;
+   if(InpScalpPreset == PRESET_BALANCED) return 0.8;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 1.2;
+   return InpRiskPercent;
+}
+
+double EffFixedLotSize()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 0.01;
+   if(InpScalpPreset == PRESET_BALANCED) return 0.02;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 0.03;
+   return InpFixedLotSize;
+}
+
+double EffSLAtrMult()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 0.70;
+   if(InpScalpPreset == PRESET_BALANCED) return 0.55;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 0.45;
+   return InpSL_ATR_Mult;
+}
+
+double EffTPAtrMult()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 1.00;
+   if(InpScalpPreset == PRESET_BALANCED) return 0.85;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 0.75;
+   return InpTP_ATR_Mult;
+}
+
+int EffMaxSpreadPoints()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 35;
+   if(InpScalpPreset == PRESET_BALANCED) return 50;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 60;
+   return InpMaxSpreadPoints;
+}
+
+int EffMaxTradesPerDay()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 120;
+   if(InpScalpPreset == PRESET_BALANCED) return 300;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 500;
+   return InpMaxTradesPerDay;
+}
+
+int EffMinSecondsBetweenEntries()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 8;
+   if(InpScalpPreset == PRESET_BALANCED) return 2;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 1;
+   return InpMinSecondsBetweenEntries;
+}
+
+int EffMaxHoldMinutes()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 20;
+   if(InpScalpPreset == PRESET_BALANCED) return 15;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 10;
+   return InpMaxHoldMinutes;
+}
+
+double EffMaxDailyLossPercent()
+{
+   if(InpScalpPreset == PRESET_CONSERVATIVE) return 4.0;
+   if(InpScalpPreset == PRESET_BALANCED) return 8.0;
+   if(InpScalpPreset == PRESET_AGGRESSIVE) return 10.0;
+   return InpMaxDailyLossPercent;
+}
+
 void OpenBuy(double atrValue)
 {
    int digits = GetSymbolDigits();
    double ask = SymbolInfoDouble(InpSymbol, SYMBOL_ASK);
 
-   double slDistance = atrValue * InpSL_ATR_Mult;
-   double tpDistance = atrValue * InpTP_ATR_Mult;
+   double slDistance = atrValue * EffSLAtrMult();
+   double tpDistance = atrValue * EffTPAtrMult();
 
    double sl = NormalizeDouble(ask - slDistance, digits);
    double tp = NormalizeDouble(ask + tpDistance, digits);
@@ -484,8 +575,8 @@ void OpenSell(double atrValue)
    int digits = GetSymbolDigits();
    double bid = SymbolInfoDouble(InpSymbol, SYMBOL_BID);
 
-   double slDistance = atrValue * InpSL_ATR_Mult;
-   double tpDistance = atrValue * InpTP_ATR_Mult;
+   double slDistance = atrValue * EffSLAtrMult();
+   double tpDistance = atrValue * EffTPAtrMult();
 
    double sl = NormalizeDouble(bid + slDistance, digits);
    double tp = NormalizeDouble(bid - tpDistance, digits);

@@ -37,6 +37,18 @@ Neu von Grund auf: Diese Version ist auf **M1-Scalping mit möglichst vielen Tra
 - Exit auf Gegensignal
 - Zeitbasiertes Schließen nach maximaler Haltedauer
 
+
+## Preset-Profile (neu)
+
+- `InpScalpPreset = PRESET_CONSERVATIVE` → vorsichtiger, weniger Trades
+- `InpScalpPreset = PRESET_BALANCED` → Standard
+- `InpScalpPreset = PRESET_AGGRESSIVE` → maximale Aktivität
+- `InpScalpPreset = PRESET_CUSTOM` → nutzt exakt deine eigenen Input-Werte
+
+Tipp für deinen Wunsch „ja gerne":
+- Für sehr viele Trades: `PRESET_AGGRESSIVE`
+- Mit fixer Lot: `InpLotMode = LOT_MODE_FIXED_LOT` und z. B. `InpFixedLotSize = 0.01`
+
 ## Lot-Size Einstellung (neu)
 
 - `InpLotMode = LOT_MODE_FIXED_LOT` → handelt mit fixer Lot Size
