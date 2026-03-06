@@ -1,6 +1,6 @@
 #property copyright "Auto-generated template"
 #property link      "https://www.mql5.com"
-#property version   "3.10"
+#property version   "3.20"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -41,6 +41,10 @@ input double InpMaxAtrPoints = 350;         // Avoid extreme volatility spikes
 input bool InpUseAdxFilter = true;
 input int InpAdxPeriod = 14;
 input double InpMinAdx = 18.0;              // Trend-strength filter
+input bool InpUseTrendTimeframeFilter = true;
+input ENUM_TIMEFRAMES InpTrendTimeframe = PERIOD_M5;
+input int InpTrendFastEmaPeriod = 21;
+input int InpTrendSlowEmaPeriod = 55;
 
 // Execution / risk
 input double InpRiskPercent = 0.8;
@@ -51,6 +55,15 @@ input double InpTP_ATR_Mult = 0.85;
 input int InpMaxSpreadPoints = 50;
 input int InpSlippagePoints = 25;
 input ulong InpMagic = 25021803;
+
+// Multi-target scaling (opens multiple positions with different TP levels)
+input bool InpUseMultiTP = true;
+input double InpTP1_ATR_Mult = 0.70;
+input double InpTP2_ATR_Mult = 1.20;
+input double InpTP3_ATR_Mult = 1.80;
+input double InpTP1_LotShare = 0.50;
+input double InpTP2_LotShare = 0.30;
+input double InpTP3_LotShare = 0.20;
 
 // High activity controls
 input int InpMaxTradesPerDay = 300;
@@ -93,6 +106,8 @@ int hSlowEma = INVALID_HANDLE;
 int hRsi = INVALID_HANDLE;
 int hAtr = INVALID_HANDLE;
 int hAdx = INVALID_HANDLE;
+int hTrendFast = INVALID_HANDLE;
+int hTrendSlow = INVALID_HANDLE;
 
 datetime lastBarTime = 0;
 datetime lastEntryTime = 0;
@@ -119,8 +134,10 @@ double CalculatePositionSizeLots(double slDistancePrice);
 bool BuildSignal(bool &longSignal, bool &shortSignal, double &atrCurrent);
 void EvaluateEntries();
 void ManageOpenPositions();
-void OpenBuy(double atrValue);
-void OpenSell(double atrValue);
+void OpenBuy(double atrValue, int maxLegs);
+void OpenSell(double atrValue, int maxLegs);
+int EffectiveLegCount();
+bool PlaceOrderLeg(bool isBuy, double lots, double sl, double tp, string label);
 double EffRiskPercent();
 double EffFixedLotSize();
 double EffSLAtrMult();
@@ -145,8 +162,10 @@ int OnInit()
    hRsi = iRSI(InpSymbol, InpSignalTimeframe, InpRsiPeriod, PRICE_CLOSE);
    hAtr = iATR(InpSymbol, InpSignalTimeframe, InpAtrPeriod);
    hAdx = iADX(InpSymbol, InpSignalTimeframe, InpAdxPeriod);
+   hTrendFast = iMA(InpSymbol, InpTrendTimeframe, InpTrendFastEmaPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   hTrendSlow = iMA(InpSymbol, InpTrendTimeframe, InpTrendSlowEmaPeriod, 0, MODE_EMA, PRICE_CLOSE);
 
-   if(hFastEma == INVALID_HANDLE || hSlowEma == INVALID_HANDLE || hRsi == INVALID_HANDLE || hAtr == INVALID_HANDLE || hAdx == INVALID_HANDLE)
+   if(hFastEma == INVALID_HANDLE || hSlowEma == INVALID_HANDLE || hRsi == INVALID_HANDLE || hAtr == INVALID_HANDLE || hAdx == INVALID_HANDLE || hTrendFast == INVALID_HANDLE || hTrendSlow == INVALID_HANDLE)
    {
       Print("Indicator handle initialization failed.");
       return INIT_FAILED;
@@ -172,6 +191,8 @@ void OnDeinit(const int reason)
    if(hRsi != INVALID_HANDLE) IndicatorRelease(hRsi);
    if(hAtr != INVALID_HANDLE) IndicatorRelease(hAtr);
    if(hAdx != INVALID_HANDLE) IndicatorRelease(hAdx);
+   if(hTrendFast != INVALID_HANDLE) IndicatorRelease(hTrendFast);
+   if(hTrendSlow != INVALID_HANDLE) IndicatorRelease(hTrendSlow);
 }
 
 void OnTick()
@@ -403,13 +424,15 @@ bool BuildSignal(bool &longSignal, bool &shortSignal, double &atrCurrent)
    longSignal = false;
    shortSignal = false;
 
-   double fastNow, slowNow, rsiNow, rsiPrev, adxNow;
+   double fastNow, slowNow, rsiNow, rsiPrev, adxNow, trendFastNow, trendSlowNow;
    if(!ReadBufferValue(hFastEma, 1, fastNow)) return false;
    if(!ReadBufferValue(hSlowEma, 1, slowNow)) return false;
    if(!ReadBufferValue(hRsi, 1, rsiNow)) return false;
    if(!ReadBufferValue(hRsi, 2, rsiPrev)) return false;
    if(!ReadBufferValue(hAtr, 1, atrCurrent)) return false;
    if(!ReadBufferValue(hAdx, 1, adxNow)) return false;
+   if(!ReadBufferValue(hTrendFast, 1, trendFastNow)) return false;
+   if(!ReadBufferValue(hTrendSlow, 1, trendSlowNow)) return false;
 
    double point = GetSymbolPoint();
    if(point <= 0.0) return false;
@@ -423,6 +446,12 @@ bool BuildSignal(bool &longSignal, bool &shortSignal, double &atrCurrent)
 
    bool trendUp = fastNow > slowNow;
    bool trendDown = fastNow < slowNow;
+
+   if(InpUseTrendTimeframeFilter)
+   {
+      trendUp = trendUp && (trendFastNow > trendSlowNow);
+      trendDown = trendDown && (trendFastNow < trendSlowNow);
+   }
 
    // aggressive midpoint RSI crossings for high trade frequency
    longSignal = trendUp && (rsiPrev <= InpRsiLongLevel && rsiNow > InpRsiLongLevel);
@@ -449,11 +478,15 @@ void EvaluateEntries()
    if(!BuildSignal(longSignal, shortSignal, atrCurrent))
       return;
 
-   if(longSignal && openBuys < InpMaxOpenPositionsPerSide)
-      OpenBuy(atrCurrent);
+   int remainingTotal = InpMaxOpenPositionsTotal - openTotal;
+   int remainingBuy = InpMaxOpenPositionsPerSide - openBuys;
+   int remainingSell = InpMaxOpenPositionsPerSide - openSells;
 
-   if(shortSignal && openSells < InpMaxOpenPositionsPerSide)
-      OpenSell(atrCurrent);
+   if(longSignal && remainingBuy > 0 && remainingTotal > 0)
+      OpenBuy(atrCurrent, MathMin(remainingBuy, remainingTotal));
+
+   if(shortSignal && remainingSell > 0 && remainingTotal > 0)
+      OpenSell(atrCurrent, MathMin(remainingSell, remainingTotal));
 }
 
 void ManageOpenPositions()
@@ -666,46 +699,120 @@ double EffMaxDailyLossPercent()
    return InpMaxDailyLossPercent;
 }
 
-void OpenBuy(double atrValue)
+int EffectiveLegCount()
+{
+   return InpUseMultiTP ? 3 : 1;
+}
+
+bool PlaceOrderLeg(bool isBuy, double lots, double sl, double tp, string label)
+{
+   if(lots <= 0.0)
+      return false;
+
+   if(isBuy)
+      return trade.Buy(lots, InpSymbol, 0.0, sl, tp, label);
+
+   return trade.Sell(lots, InpSymbol, 0.0, sl, tp, label);
+}
+
+void OpenBuy(double atrValue, int maxLegs)
 {
    int digits = GetSymbolDigits();
    double ask = SymbolInfoDouble(InpSymbol, SYMBOL_ASK);
 
    double slDistance = atrValue * EffSLAtrMult();
-   double tpDistance = atrValue * EffTPAtrMult();
-
    double sl = NormalizeDouble(ask - slDistance, digits);
-   double tp = NormalizeDouble(ask + tpDistance, digits);
-   double lots = CalculatePositionSizeLots(slDistance);
-
-   if(lots <= 0.0)
+   double totalLots = CalculatePositionSizeLots(slDistance);
+   if(totalLots <= 0.0)
       return;
 
-   if(trade.Buy(lots, InpSymbol, 0.0, sl, tp, "XAU M1 scalp buy"))
+   int requestedLegs = EffectiveLegCount();
+   int legs = MathMax(1, MathMin(requestedLegs, maxLegs));
+
+   double shares[3] = {InpTP1_LotShare, InpTP2_LotShare, InpTP3_LotShare};
+   double tps[3] = {InpTP1_ATR_Mult, InpTP2_ATR_Mult, InpTP3_ATR_Mult};
+   if(!InpUseMultiTP)
    {
-      tradesToday++;
-      lastEntryTime = TimeCurrent();
+      shares[0] = 1.0;
+      tps[0] = EffTPAtrMult();
    }
+
+   double shareSum = 0.0;
+   for(int i = 0; i < legs; ++i)
+      shareSum += MathMax(0.0, shares[i]);
+   if(shareSum <= 0.0)
+      return;
+
+   double usedLots = 0.0;
+   for(int i = 0; i < legs; ++i)
+   {
+      double legLots = (i == legs - 1) ? (totalLots - usedLots) : NormalizeVolume(totalLots * (MathMax(0.0, shares[i]) / shareSum));
+      legLots = NormalizeVolume(legLots);
+      if(legLots <= 0.0)
+         continue;
+
+      double tpDistance = atrValue * tps[i];
+      double tp = NormalizeDouble(ask + tpDistance, digits);
+      string label = "XAU M1 buy TP" + IntegerToString(i + 1);
+
+      if(PlaceOrderLeg(true, legLots, sl, tp, label))
+      {
+         tradesToday++;
+         usedLots += legLots;
+      }
+   }
+
+   if(usedLots > 0.0)
+      lastEntryTime = TimeCurrent();
 }
 
-void OpenSell(double atrValue)
+void OpenSell(double atrValue, int maxLegs)
 {
    int digits = GetSymbolDigits();
    double bid = SymbolInfoDouble(InpSymbol, SYMBOL_BID);
 
    double slDistance = atrValue * EffSLAtrMult();
-   double tpDistance = atrValue * EffTPAtrMult();
-
    double sl = NormalizeDouble(bid + slDistance, digits);
-   double tp = NormalizeDouble(bid - tpDistance, digits);
-   double lots = CalculatePositionSizeLots(slDistance);
-
-   if(lots <= 0.0)
+   double totalLots = CalculatePositionSizeLots(slDistance);
+   if(totalLots <= 0.0)
       return;
 
-   if(trade.Sell(lots, InpSymbol, 0.0, sl, tp, "XAU M1 scalp sell"))
+   int requestedLegs = EffectiveLegCount();
+   int legs = MathMax(1, MathMin(requestedLegs, maxLegs));
+
+   double shares[3] = {InpTP1_LotShare, InpTP2_LotShare, InpTP3_LotShare};
+   double tps[3] = {InpTP1_ATR_Mult, InpTP2_ATR_Mult, InpTP3_ATR_Mult};
+   if(!InpUseMultiTP)
    {
-      tradesToday++;
-      lastEntryTime = TimeCurrent();
+      shares[0] = 1.0;
+      tps[0] = EffTPAtrMult();
    }
+
+   double shareSum = 0.0;
+   for(int i = 0; i < legs; ++i)
+      shareSum += MathMax(0.0, shares[i]);
+   if(shareSum <= 0.0)
+      return;
+
+   double usedLots = 0.0;
+   for(int i = 0; i < legs; ++i)
+   {
+      double legLots = (i == legs - 1) ? (totalLots - usedLots) : NormalizeVolume(totalLots * (MathMax(0.0, shares[i]) / shareSum));
+      legLots = NormalizeVolume(legLots);
+      if(legLots <= 0.0)
+         continue;
+
+      double tpDistance = atrValue * tps[i];
+      double tp = NormalizeDouble(bid - tpDistance, digits);
+      string label = "XAU M1 sell TP" + IntegerToString(i + 1);
+
+      if(PlaceOrderLeg(false, legLots, sl, tp, label))
+      {
+         tradesToday++;
+         usedLots += legLots;
+      }
+   }
+
+   if(usedLots > 0.0)
+      lastEntryTime = TimeCurrent();
 }

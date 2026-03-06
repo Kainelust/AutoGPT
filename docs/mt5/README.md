@@ -62,6 +62,22 @@ Tipp für deinen Wunsch „ja gerne":
 - Für sehr viele Trades: `PRESET_AGGRESSIVE`
 - Mit fixer Lot: `InpLotMode = LOT_MODE_FIXED_LOT` und z. B. `InpFixedLotSize = 0.01`
 
+## Strategie-Upgrade (aktuelle Runde)
+
+Basierend auf deinen heutigen Ergebnissen (viele kurze Trades, teils schnelle Gegenläufe) wurde die Strategie robuster gemacht:
+
+- **Höherer Trendfilter (M5-EMA 21/55)**: Entries auf M1 nur, wenn M5-Trendrichtung passt.
+- **Multi-TP Scaling-Out**: Der Bot kann mehrere Positionen pro Signal mit unterschiedlichen TP-Zielen eröffnen.
+  - TP1/TP2/TP3 per ATR (`InpTP1_ATR_Mult`, `InpTP2_ATR_Mult`, `InpTP3_ATR_Mult`)
+  - Lot-Anteile je Ziel (`InpTP1_LotShare`, `InpTP2_LotShare`, `InpTP3_LotShare`)
+- **Regime-Filter bleiben aktiv**: ADX + ATR-Korridor + Loss-Streak-Cooldown.
+
+Empfehlung für deinen Fall (XAUUSD M1):
+- `InpUseTrendTimeframeFilter = true`
+- `InpUseMultiTP = true`
+- `InpTP1_ATR_Mult = 0.70`, `InpTP2_ATR_Mult = 1.20`, `InpTP3_ATR_Mult = 1.80`
+- `InpTP1_LotShare = 0.50`, `InpTP2_LotShare = 0.30`, `InpTP3_LotShare = 0.20`
+
 ## Stabilitäts-Optimierungen (neue Runde)
 
 Um den Bot robuster zu machen (statt nur aggressiver), wurden zusätzliche Filter eingebaut:
