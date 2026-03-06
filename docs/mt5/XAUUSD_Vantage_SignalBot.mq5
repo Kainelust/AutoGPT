@@ -1,6 +1,6 @@
 #property copyright "Auto-generated template"
 #property link      "https://www.mql5.com"
-#property version   "3.00"
+#property version   "3.10"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -37,6 +37,10 @@ input double InpRsiLongLevel = 50.0;
 input double InpRsiShortLevel = 50.0;
 input int InpAtrPeriod = 14;
 input double InpMinAtrPoints = 30;          // Lower threshold for more M1 entries
+input double InpMaxAtrPoints = 350;         // Avoid extreme volatility spikes
+input bool InpUseAdxFilter = true;
+input int InpAdxPeriod = 14;
+input double InpMinAdx = 18.0;              // Trend-strength filter
 
 // Execution / risk
 input double InpRiskPercent = 0.8;
@@ -53,6 +57,8 @@ input int InpMaxTradesPerDay = 300;
 input int InpMaxOpenPositionsTotal = 4;
 input int InpMaxOpenPositionsPerSide = 2;
 input int InpMinSecondsBetweenEntries = 4;
+input int InpMaxConsecutiveLosses = 3;
+input int InpLossPauseMinutes = 60;
 
 // Position management
 input bool InpUseBreakEven = true;
@@ -86,12 +92,15 @@ int hFastEma = INVALID_HANDLE;
 int hSlowEma = INVALID_HANDLE;
 int hRsi = INVALID_HANDLE;
 int hAtr = INVALID_HANDLE;
+int hAdx = INVALID_HANDLE;
 
 datetime lastBarTime = 0;
 datetime lastEntryTime = 0;
 double dayStartEquity = 0.0;
 int currentDayOfYear = -1;
 int tradesToday = 0;
+int consecutiveLosses = 0;
+datetime lossPauseUntil = 0;
 
 bool IsNewBar();
 void ResetDailyStateIfNeeded();
@@ -100,6 +109,7 @@ bool IsInNoTradeWindow();
 bool IsWithinWindowMinutes(int curMin, int startMin, int endMin);
 bool IsSpreadOk();
 bool IsDailyRiskOk();
+bool IsLossPauseActive();
 bool ReadBufferValue(const int handle, const int shift, double &value);
 double GetSymbolPoint();
 int GetSymbolDigits();
@@ -120,6 +130,7 @@ int EffMaxTradesPerDay();
 int EffMinSecondsBetweenEntries();
 int EffMaxHoldMinutes();
 double EffMaxDailyLossPercent();
+void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest& request, const MqlTradeResult& result);
 
 int OnInit()
 {
@@ -133,8 +144,9 @@ int OnInit()
    hSlowEma = iMA(InpSymbol, InpSignalTimeframe, InpSlowEmaPeriod, 0, MODE_EMA, PRICE_CLOSE);
    hRsi = iRSI(InpSymbol, InpSignalTimeframe, InpRsiPeriod, PRICE_CLOSE);
    hAtr = iATR(InpSymbol, InpSignalTimeframe, InpAtrPeriod);
+   hAdx = iADX(InpSymbol, InpSignalTimeframe, InpAdxPeriod);
 
-   if(hFastEma == INVALID_HANDLE || hSlowEma == INVALID_HANDLE || hRsi == INVALID_HANDLE || hAtr == INVALID_HANDLE)
+   if(hFastEma == INVALID_HANDLE || hSlowEma == INVALID_HANDLE || hRsi == INVALID_HANDLE || hAtr == INVALID_HANDLE || hAdx == INVALID_HANDLE)
    {
       Print("Indicator handle initialization failed.");
       return INIT_FAILED;
@@ -159,6 +171,7 @@ void OnDeinit(const int reason)
    if(hSlowEma != INVALID_HANDLE) IndicatorRelease(hSlowEma);
    if(hRsi != INVALID_HANDLE) IndicatorRelease(hRsi);
    if(hAtr != INVALID_HANDLE) IndicatorRelease(hAtr);
+   if(hAdx != INVALID_HANDLE) IndicatorRelease(hAdx);
 }
 
 void OnTick()
@@ -174,6 +187,7 @@ void OnTick()
    if(IsInNoTradeWindow()) return;
    if(!IsSpreadOk()) return;
    if(!IsDailyRiskOk()) return;
+   if(IsLossPauseActive()) return;
 
    if(tradesToday >= EffMaxTradesPerDay())
    {
@@ -194,6 +208,8 @@ void ResetDailyStateIfNeeded()
       currentDayOfYear = dt.day_of_year;
       dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
       tradesToday = 0;
+      consecutiveLosses = 0;
+      lossPauseUntil = 0;
       Print("Daily counters reset.");
    }
 }
@@ -290,6 +306,16 @@ bool IsDailyRiskOk()
    return true;
 }
 
+bool IsLossPauseActive()
+{
+   if(TimeCurrent() < lossPauseUntil)
+   {
+      Print("Loss cooldown active until ", TimeToString(lossPauseUntil, TIME_MINUTES));
+      return true;
+   }
+   return false;
+}
+
 bool ReadBufferValue(const int handle, const int shift, double &value)
 {
    double arr[];
@@ -377,18 +403,22 @@ bool BuildSignal(bool &longSignal, bool &shortSignal, double &atrCurrent)
    longSignal = false;
    shortSignal = false;
 
-   double fastNow, slowNow, rsiNow, rsiPrev;
+   double fastNow, slowNow, rsiNow, rsiPrev, adxNow;
    if(!ReadBufferValue(hFastEma, 1, fastNow)) return false;
    if(!ReadBufferValue(hSlowEma, 1, slowNow)) return false;
    if(!ReadBufferValue(hRsi, 1, rsiNow)) return false;
    if(!ReadBufferValue(hRsi, 2, rsiPrev)) return false;
    if(!ReadBufferValue(hAtr, 1, atrCurrent)) return false;
+   if(!ReadBufferValue(hAdx, 1, adxNow)) return false;
 
    double point = GetSymbolPoint();
    if(point <= 0.0) return false;
 
    double atrPoints = atrCurrent / point;
-   if(atrPoints < InpMinAtrPoints)
+   if(atrPoints < InpMinAtrPoints || atrPoints > InpMaxAtrPoints)
+      return true;
+
+   if(InpUseAdxFilter && adxNow < InpMinAdx)
       return true;
 
    bool trendUp = fastNow > slowNow;
@@ -525,6 +555,44 @@ void ManageOpenPositions()
    }
 }
 
+
+
+void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest& request, const MqlTradeResult& result)
+{
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+
+   ulong dealTicket = trans.deal;
+   if(dealTicket == 0 || !HistoryDealSelect(dealTicket))
+      return;
+
+   string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+   long magic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
+   long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+   if(symbol != InpSymbol || (ulong)magic != InpMagic)
+      return;
+
+   if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_OUT_BY)
+      return;
+
+   double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                 + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                 + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+
+   if(profit < 0.0)
+   {
+      consecutiveLosses++;
+      if(consecutiveLosses >= InpMaxConsecutiveLosses)
+      {
+         lossPauseUntil = TimeCurrent() + (InpLossPauseMinutes * 60);
+         Print("Consecutive loss limit reached. Pause until ", TimeToString(lossPauseUntil, TIME_MINUTES));
+      }
+   }
+   else if(profit > 0.0)
+   {
+      consecutiveLosses = 0;
+   }
+}
 
 double EffRiskPercent()
 {

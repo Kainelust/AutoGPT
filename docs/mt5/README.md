@@ -62,6 +62,17 @@ Tipp für deinen Wunsch „ja gerne":
 - Für sehr viele Trades: `PRESET_AGGRESSIVE`
 - Mit fixer Lot: `InpLotMode = LOT_MODE_FIXED_LOT` und z. B. `InpFixedLotSize = 0.01`
 
+## Stabilitäts-Optimierungen (neue Runde)
+
+Um den Bot robuster zu machen (statt nur aggressiver), wurden zusätzliche Filter eingebaut:
+
+- **Trendstärke-Filter (ADX)**: Trades nur bei ausreichender Trendstärke (`InpUseAdxFilter`, `InpMinAdx`).
+- **Volatilitäts-Regime-Filter**: Trades nur wenn ATR im Korridor liegt (`InpMinAtrPoints` bis `InpMaxAtrPoints`).
+- **Loss-Streak-Cooldown**: Nach zu vielen Verlusttrades in Folge pausiert der Bot automatisch (`InpMaxConsecutiveLosses`, `InpLossPauseMinutes`).
+- **Live-Safe Defaults** bleiben aktiv (Fixed Lot 0.01, begrenzte Parallelpositionen).
+
+Wichtig: Kein Bot kann "immer" Profit garantieren. Diese Regeln sollen Overtrading und schlechte Marktphasen reduzieren.
+
 ## Lot-Size Einstellung (neu)
 
 - `InpLotMode = LOT_MODE_FIXED_LOT` → handelt mit fixer Lot Size
